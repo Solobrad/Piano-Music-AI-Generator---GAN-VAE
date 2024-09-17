@@ -7,67 +7,38 @@ instrument_name = "piano"  # Replace "piano" with the desired instrument name
 
 
 def generate_music(generator, latent_dim, sequence_length, n_notes, output_file):
-    # Generate random noise as input for the generator
-    # Two hands, two noise vectors
-    noise = np.random.normal(0, 1, (2, latent_dim))
+    noise = np.random.normal(0, 1, (1, latent_dim))  # Single hand
 
-    # Generate music sequences using the generator for each hand
-    generated_sequence_left = generator.predict(
-        noise[0].reshape(1, latent_dim))
-    generated_sequence_right = generator.predict(
-        noise[1].reshape(1, latent_dim))
+    # Generate music sequence using the generator
+    generated_sequence = generator.predict(noise.reshape(1, latent_dim))
 
-    # **Debugging: Check the shapes of generated sequences**
-    print(
-        f"Generated sequence shape (left hand): {generated_sequence_left.shape}")
-    print(
-        f"Generated sequence shape (right hand): {generated_sequence_right.shape}")
+    # **Debugging: Check the shape of the generated sequence**
+    print(f"Generated sequence shape: {generated_sequence.shape}")
 
-    # Reshaping generated sequences
-    generated_sequence_left = generated_sequence_left.reshape(
-        (sequence_length, 4))  # Modify based on output shape
-    generated_sequence_right = generated_sequence_right.reshape(
+    # Reshaping generated sequence
+    generated_sequence = generated_sequence.reshape(
         (sequence_length, 4))  # Modify based on output shape
 
-    # Convert the generated sequences back to original note values
-    generated_notes_left = decode_sequence(generated_sequence_left)
-    generated_notes_right = decode_sequence(generated_sequence_right)
+    # Convert the generated sequence back to original note values
+    generated_notes = decode_sequence(generated_sequence)
 
     # Create a Music21 stream to store the generated notes
     music_stream = stream.Score()
 
-    # Add generated notes to the stream
-    for i in range(len(generated_notes_left)):
-        left_note_value = generated_notes_left[i]
-        right_note_value = generated_notes_right[i]
-
-        # Handle left hand notes
-        if isinstance(left_note_value, list):  # Chord
-            chord_notes_left = [
-                note.Note(int(n), quarterLength=1) for n in left_note_value
-            ]  # Use half note for chord notes
-            new_chord_left = chord.Chord(chord_notes_left)
-            music_stream.append(new_chord_left)
+    # Add generated notes to the stream for one hand
+    for note_value in generated_notes:
+        # Handle single note or chord
+        if isinstance(note_value, list):  # Chord
+            chord_notes = [note.Note(int(n), quarterLength=1)
+                           for n in note_value]
+            new_chord = chord.Chord(chord_notes)
+            music_stream.append(new_chord)
         else:  # Single note
             duration_choices = [0.25, 0.5, 1.0]
             selected_duration = np.random.choice(duration_choices)
-            new_note_left = note.Note(
-                int(left_note_value), quarterLength=selected_duration)
-            music_stream.append(new_note_left)
-
-        # Handle right hand notes
-        if isinstance(right_note_value, list):  # Chord
-            chord_notes_right = [
-                note.Note(int(n), quarterLength=1) for n in right_note_value
-            ]  # Use half note for chord notes
-            new_chord_right = chord.Chord(chord_notes_right)
-            music_stream.append(new_chord_right)
-        else:  # Single note
-            duration_choices = [0.25, 0.5, 1.0]
-            selected_duration = np.random.choice(duration_choices)
-            new_note_right = note.Note(
-                int(right_note_value), quarterLength=selected_duration)
-            music_stream.append(new_note_right)
+            new_note = note.Note(
+                int(note_value), quarterLength=selected_duration)
+            music_stream.append(new_note)
 
     # Set the instrument for the entire stream
     instrument_obj = instrument.Piano()  # Replace with the desired instrument
@@ -80,9 +51,9 @@ def generate_music(generator, latent_dim, sequence_length, n_notes, output_file)
     music_stream.write('midi', fp=output_file)
 
 
-def decode_sequence(sequence):
-    # Decode the sequence back to original note values
-    return [int(x * 87) + 21 for x in sequence.flatten()]
+def decode_sequence(sequence, low_note=60, high_note=87):
+    # Scale generated values to the desired MIDI note range
+    return [int(x * (high_note - low_note)) + low_note for x in sequence.flatten()]
 
 
 if __name__ == "__main__":

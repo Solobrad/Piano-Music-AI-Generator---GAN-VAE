@@ -52,6 +52,8 @@ def pitch_to_midi(pitch_string):
         if midi_values:
             return np.mean(midi_values)
         else:
+            print(
+                f"No valid MIDI values found for pitch string {pitch_string}")
             return 0
     except Exception as e:
         print(f"Error processing pitch string {pitch_string}: {e}")
@@ -72,12 +74,16 @@ def prepare_sequences(notes_with_details, sequence_length=30):
             timestep_features = [0, 0, 0, 0]
             if 'pitch' in item:
                 # If it's an individual note, update the features accordingly
+                pitch = item['pitch']
+                print(f"Processing single pitch: {pitch}")
                 timestep_features[0] = pitch_to_midi(item['pitch'])
                 timestep_features[1] = item['offset']
                 timestep_features[2] = item['duration']
                 timestep_features[3] = item['dynamic']
             elif 'pitches' in item:
                 # If it's a chord, update the features for each pitch in the chord
+                pitches = item['pitches']
+                print(f"Processing chord pitches: {pitches}")
                 midi_values = [pitch_to_midi(p) for p in item['pitches']]
 
                 # Remove None values from midi_values
@@ -157,11 +163,11 @@ def build_discriminator(sequence_length, n_notes):
     model = Sequential()
     model.add(LSTM(512, input_shape=(
         sequence_length, 4), return_sequences=True))
-    model.add(Dropout(0.2))
+    model.add(Dropout(0.5))
     model.add(LSTM(512, return_sequences=False))
-    model.add(Dropout(0.2))
+    model.add(Dropout(0.5))
     model.add(Dense(512))
-    model.add(Dropout(0.2))
+    model.add(Dropout(0.5))
     model.add(Dense(256))
     model.add(Dense(1, activation='sigmoid'))
     return model
@@ -183,7 +189,8 @@ def train_gan(generator, discriminator, gan, network_input, network_output, epoc
         for _ in tqdm(range(subset_size // batch_size), desc="Batch Progress"):
             idx = np.random.randint(0, network_input.shape[0], batch_size)
             real_notes = network_input[idx]
-            labels_real = np.ones((batch_size, 1))
+            real_notes += np.random.normal(0, 0.1, real_notes.shape)
+            labels_real = np.ones((batch_size, 1)) * 0.9
 
             noise = np.random.normal(0, 1, (batch_size, latent_dim))
             generated_notes = generator.predict(noise)
@@ -231,9 +238,9 @@ if __name__ == "__main__":
     latent_dim = 100
     # Set different learning rates for generator and discriminator
     # Lower learning rate for the generator
-    generator_optimizer = Adam(learning_rate=0.0005, beta_1=0.5)
+    generator_optimizer = Adam(learning_rate=0.001, beta_1=0.5)
     # Higher learning rate for the discriminator
-    discriminator_optimizer = Adam(learning_rate=0.001, beta_1=0.5)
+    discriminator_optimizer = Adam(learning_rate=0.0001, beta_1=0.5)
 
     pitchnames = sorted(set(note.get('pitch', '') or '.'.join(
         note.get('pitches', [])) for note in notes))
@@ -264,7 +271,7 @@ if __name__ == "__main__":
 
     # Train the GAN
     train_gan(generator, discriminator, gan, network_input,
-              network_output, epochs=1, batch_size=256)
+              network_output, epochs=5, batch_size=256)
     # Save the models
     generator.save(
         "generator_model.keras")
