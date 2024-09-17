@@ -17,10 +17,17 @@ def generate_music(generator, latent_dim, sequence_length, n_notes, output_file)
     generated_sequence_right = generator.predict(
         noise[1].reshape(1, latent_dim))
 
+    # **Debugging: Check the shapes of generated sequences**
+    print(
+        f"Generated sequence shape (left hand): {generated_sequence_left.shape}")
+    print(
+        f"Generated sequence shape (right hand): {generated_sequence_right.shape}")
+
+    # Reshaping generated sequences
     generated_sequence_left = generated_sequence_left.reshape(
-        (sequence_length, n_notes))
+        (sequence_length, 4))  # Modify based on output shape
     generated_sequence_right = generated_sequence_right.reshape(
-        (sequence_length, n_notes))
+        (sequence_length, 4))  # Modify based on output shape
 
     # Convert the generated sequences back to original note values
     generated_notes_left = decode_sequence(generated_sequence_left)
@@ -81,7 +88,7 @@ def decode_sequence(sequence):
 if __name__ == "__main__":
     # Load the saved generator model
     generator = load_model(
-        "C:\\Users\\ASUS\\Desktop\\AI\\AI piano Music GAN\\generator_model.h5")
+        "generator_model.h5")
 
     # Set parameters
     latent_dim = 100
@@ -89,7 +96,7 @@ if __name__ == "__main__":
     n_notes = 1  # Number of unique notes in the dataset
 
     # Specify the output file path
-    output_file = "C:\\Users\\ASUS\\Desktop\\AI\\AI piano Music GAN\\generated_music.mid"
+    output_file = "generated_music.mid"
 
     # Generate music using the trained generator
     generate_music(generator, latent_dim,

@@ -3,11 +3,12 @@ import json
 import numpy as np
 import tensorflow as tf
 from keras.models import Sequential, Model
-from keras.layers import Dense, LSTM, BatchNormalization, Reshape, Input, Concatenate
-from keras.optimizers import Adam
+from keras.layers import Dense, LSTM, BatchNormalization, Reshape, Input, Concatenate, Dropout
+from tensorflow.keras.optimizers import Adam
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 from tqdm import tqdm
+import music21 as m21
 
 
 def load_notes_from_file(file_path):
@@ -27,6 +28,36 @@ def visualize_generated_samples(generator, epoch, num_samples=5, latent_dim=100)
     print(f"Generated samples visualized at epoch {epoch}")
 
 
+def pitch_to_midi(pitch_string):
+    try:
+        if not pitch_string:
+            print(f"Pitch string is empty: {pitch_string}")
+
+        # Replace unsupported accidentals with supported ones
+        pitch_string = pitch_string.replace('♯', '#').replace('♭', 'b')
+
+        # Split the pitch string if it contains multiple pitches
+        pitch_strings = pitch_string.split('.')
+        midi_values = []
+
+        for ps in pitch_strings:
+            if ps:
+                try:
+                    # Assuming `m21` is used for pitch processing
+                    pitch_obj = m21.pitch.Pitch(ps)
+                    midi_values.append(pitch_obj.midi)
+                except Exception as e:
+                    print(f"Error processing pitch string {ps}: {e}")
+                    continue
+        if midi_values:
+            return np.mean(midi_values)
+        else:
+            return 0
+    except Exception as e:
+        print(f"Error processing pitch string {pitch_string}: {e}")
+        return 0
+
+
 def prepare_sequences(notes_with_details, sequence_length=30):
     network_input = []
     network_output = []
@@ -41,33 +72,51 @@ def prepare_sequences(notes_with_details, sequence_length=30):
             timestep_features = [0, 0, 0, 0]
             if 'pitch' in item:
                 # If it's an individual note, update the features accordingly
-                timestep_features[0] = item['pitch']
+                timestep_features[0] = pitch_to_midi(item['pitch'])
                 timestep_features[1] = item['offset']
                 timestep_features[2] = item['duration']
                 timestep_features[3] = item['dynamic']
             elif 'pitches' in item:
                 # If it's a chord, update the features for each pitch in the chord
-                for chord_pitch in item['pitches']:
-                    timestep_features[0] = chord_pitch
-                    timestep_features[1] = item['offset']
-                    timestep_features[2] = item['duration']
-                    timestep_features[3] = item['dynamic']
+                midi_values = [pitch_to_midi(p) for p in item['pitches']]
+
+                # Remove None values from midi_values
+
+                midi_values = [m for m in midi_values if m is not None]
+
+                if midi_values:
+                    # Compute mean of valid MIDI values
+                    timestep_features[0] = np.mean(midi_values)
+                else:
+                    # Default value if no valid MIDI values
+                    timestep_features[0] = 0
+
+                timestep_features[1] = item['offset']
+                timestep_features[2] = item['duration']
+                timestep_features[3] = item['dynamic']
         # Pad or truncate the input data to ensure each item has four features
             input_data.append(timestep_features)
 
         network_input.append(input_data)
-        network_output.append(sequence_out.get('pitch', ''))
+        network_output.append(pitch_to_midi(sequence_out.get('pitch', '')))
 
     network_input = np.array(network_input)
+    network_output = np.array(network_output)
+
+    # Print the shape of network_input before reshaping
     print("Shape of network_input before reshaping:", network_input.shape)
 
-    network_output = np.array(network_output)
+    # Ensure the network_input has the shape (num_samples, sequence_length, num_features)
+    if network_input.ndim == 3 and network_input.shape[2] != 4:
+        print("Warning: The number of features in network_input is not 4. Adjusting...")
+        network_input = np.array([x + [[0, 0, 0, 0]] * (sequence_length - len(x)) if len(
+            x) < sequence_length else x[:sequence_length] for x in network_input])
+
     network_input = network_input.reshape(
         network_input.shape[0], network_input.shape[1], 4)
     print("Shape of network_input after reshaping:", network_input.shape)
 
-
-# Debug print to identify timesteps with only one feature
+    # Debug print to identify timesteps with only one feature
     for i, timestep in enumerate(network_input):
         if timestep.shape[-1] == 1:
             print(f"Timestep {i} has only one feature:", timestep)
@@ -99,8 +148,8 @@ def build_generator(latent_dim, sequence_length, n_notes):
     model.add(BatchNormalization())
     model.add(Dense(256))  # New Dense layer
     model.add(BatchNormalization())
-    model.add(Dense(sequence_length * 1, activation='relu'))  # Set units to 1
-    model.add(Reshape((sequence_length, 1)))
+    model.add(Dense(sequence_length * 4, activation='relu'))  # Set units to 1
+    model.add(Reshape((sequence_length, 4)))
     return model
 
 
@@ -108,8 +157,11 @@ def build_discriminator(sequence_length, n_notes):
     model = Sequential()
     model.add(LSTM(512, input_shape=(
         sequence_length, 4), return_sequences=True))
-    model.add(LSTM(512, return_sequences=True))
+    model.add(Dropout(0.2))
+    model.add(LSTM(512, return_sequences=False))
+    model.add(Dropout(0.2))
     model.add(Dense(512))
+    model.add(Dropout(0.2))
     model.add(Dense(256))
     model.add(Dense(1, activation='sigmoid'))
     return model
@@ -123,7 +175,7 @@ def build_gan(generator, discriminator):
     return model
 
 
-def train_gan(generator, discriminator, gan, network_input, network_output, epochs=5, batch_size=256):
+def train_gan(generator, discriminator, gan, network_input, network_output, epochs, batch_size=256):
     # Change the number of batches per epoch by subsetting the data
     subset_size = 100000  # Choose the desired subset size
     for epoch in range(epochs):
@@ -161,6 +213,9 @@ if __name__ == "__main__":
     # Load parsed notes from file
     notes = load_notes_from_file(output_file_path)
 
+    # Print the first 10 notes to inspect
+    print("Sample notes data:", notes[:10])
+
     # Prepare sequences for training
     sequence_length = 30
     network_input, network_output = prepare_sequences(notes, sequence_length)
@@ -174,8 +229,11 @@ if __name__ == "__main__":
 
     # Set parameters for the model
     latent_dim = 100
-    optimizer = tf.keras.optimizers.legacy.Adam(
-        learning_rate=0.001, beta_1=0.5)
+    # Set different learning rates for generator and discriminator
+    # Lower learning rate for the generator
+    generator_optimizer = Adam(learning_rate=0.0005, beta_1=0.5)
+    # Higher learning rate for the discriminator
+    discriminator_optimizer = Adam(learning_rate=0.001, beta_1=0.5)
 
     pitchnames = sorted(set(note.get('pitch', '') or '.'.join(
         note.get('pitches', [])) for note in notes))
@@ -188,7 +246,7 @@ if __name__ == "__main__":
     print("\nDiscriminator Summary:")
     discriminator.summary()
     discriminator.compile(loss='binary_crossentropy',
-                          optimizer=optimizer, metrics=['accuracy'])
+                          optimizer=discriminator_optimizer, metrics=['accuracy'])
 
     # Build the generator
     generator = build_generator(latent_dim, sequence_length, n_notes)
@@ -202,14 +260,14 @@ if __name__ == "__main__":
     x = generator(gan_input)
     gan_output = discriminator(x)
     gan = Model(gan_input, gan_output)
-    gan.compile(loss='binary_crossentropy', optimizer=optimizer)
+    gan.compile(loss='binary_crossentropy', optimizer=generator_optimizer)
 
     # Train the GAN
     train_gan(generator, discriminator, gan, network_input,
-              network_output, epochs=5, batch_size=256)
+              network_output, epochs=1, batch_size=256)
     # Save the models
     generator.save(
-        "C:\\Users\\ASUS\\Desktop\\AI\\Advance AI Music\\generator_model.h5")
+        "generator_model.keras")
     discriminator.save(
-        "C:\\Users\\ASUS\\Desktop\\AI\\Advance AI Music\\discriminator_model.h5")
-    gan.save("C:\\Users\\ASUS\\Desktop\\AI\\Advance AI Music\\gan_model.h5")
+        "discriminator_model.keras")
+    gan.save("gan_model.keras")
