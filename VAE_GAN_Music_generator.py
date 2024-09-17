@@ -59,7 +59,7 @@ def decode_sequence(sequence, low_note=60, high_note=87):
 if __name__ == "__main__":
     # Load the saved generator model
     generator = load_model(
-        "generator_model.h5")
+        "Trained files/generator_model.keras")
 
     # Set parameters
     latent_dim = 100

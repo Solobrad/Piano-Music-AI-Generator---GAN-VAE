@@ -163,11 +163,11 @@ def build_discriminator(sequence_length, n_notes):
     model = Sequential()
     model.add(LSTM(512, input_shape=(
         sequence_length, 4), return_sequences=True))
-    model.add(Dropout(0.5))
+    model.add(Dropout(0.2))
     model.add(LSTM(512, return_sequences=False))
-    model.add(Dropout(0.5))
+    model.add(Dropout(0.2))
     model.add(Dense(512))
-    model.add(Dropout(0.5))
+    model.add(Dropout(0.2))
     model.add(Dense(256))
     model.add(Dense(1, activation='sigmoid'))
     return model
@@ -181,29 +181,97 @@ def build_gan(generator, discriminator):
     return model
 
 
-def train_gan(generator, discriminator, gan, network_input, network_output, epochs, batch_size=256):
-    # Change the number of batches per epoch by subsetting the data
-    subset_size = 100000  # Choose the desired subset size
+def build_vae(latent_dim, sequence_length):
+    # Encoder
+    # Adjust input shape if needed
+    encoder_input = Input(shape=(sequence_length, 4), name="encoder_input")
+    x = LSTM(128, return_sequences=False)(encoder_input)
+    latent_vector = Dense(latent_dim, name="latent_vector")(x)
+    encoder = Model(encoder_input, latent_vector, name="encoder")
+
+    # Decoder
+    decoder_input = Input(shape=(latent_dim,), name="decoder_input")
+    x = Dense(sequence_length * 4)(decoder_input)
+    decoder_output = Reshape((sequence_length, 4), name="decoder_output")(x)
+    decoder = Model(decoder_input, decoder_output, name="decoder")
+
+    # VAE (Combining Encoder and Decoder)
+    vae_input = encoder_input
+    vae_output = decoder(encoder(vae_input))
+    vae = Model(vae_input, vae_output, name="vae")
+
+    return vae
+
+
+def build_gan_vae_hybrid(vae, latent_dim, sequence_length, n_notes):
+    if not hasattr(vae, 'get_layer'):
+        raise ValueError(
+            "The provided VAE model does not have the 'get_layer' method.")
+
+    try:
+        encoder = vae.get_layer("encoder")
+        decoder = vae.get_layer("decoder")
+    except ValueError as e:
+        raise ValueError(
+            "Encoder or Decoder layer not found in the VAE model") from e
+
+    # Create generator using the decoder part of VAE
+    generator_input = Input(shape=(latent_dim,))
+    generator_output = decoder(generator_input)
+    generator = Model(generator_input, generator_output, name="generator")
+
+    # Create discriminator
+    discriminator = build_discriminator(sequence_length, n_notes)
+
+    # Build GAN using the generator and discriminator
+    gan = build_gan(generator, discriminator)
+
+    return generator, discriminator, gan
+
+
+def train_gan_vae_hybrid(vae, generator, discriminator, gan, network_input, epochs, batch_size=256, subset_size=None):
+    # Compile the VAE
+    vae.compile(optimizer='adam', loss='mean_squared_error')
+
+    # Train the VAE
+    vae.fit(network_input, network_input, epochs=epochs, batch_size=batch_size)
+
+    # Extract the VAE encoder and decoder
+    encoder = vae.get_layer("encoder")
+    decoder = vae.get_layer("decoder")
+
+    # Determine the subset size if provided
+    if subset_size is None:
+        subset_size = len(network_input)
+
+    num_batches = subset_size // batch_size
+
     for epoch in range(epochs):
         print(f"Epoch {epoch + 1}/{epochs}")
-        for _ in tqdm(range(subset_size // batch_size), desc="Batch Progress"):
-            idx = np.random.randint(0, network_input.shape[0], batch_size)
+
+        for _ in tqdm(range(num_batches), desc="Batch Progress"):
+            idx = np.random.randint(
+                0, min(subset_size, network_input.shape[0]), batch_size)
             real_notes = network_input[idx]
             real_notes += np.random.normal(0, 0.1, real_notes.shape)
             labels_real = np.ones((batch_size, 1)) * 0.9
 
-            noise = np.random.normal(0, 1, (batch_size, latent_dim))
-            generated_notes = generator.predict(noise)
+            # Generate latent space representations using the VAE encoder
+            latent_space = encoder.predict(real_notes)
+
+            # Generate fake notes using the GAN generator
+            generated_notes = generator.predict(latent_space)
             labels_fake = np.zeros((batch_size, 1))
 
+            # Train the discriminator
             d_loss_real = discriminator.train_on_batch(real_notes, labels_real)
             d_loss_fake = discriminator.train_on_batch(
                 generated_notes, labels_fake)
             d_loss = 0.5 * np.add(d_loss_real, d_loss_fake)
 
+            # Train the GAN
             noise = np.random.normal(0, 1, (batch_size, latent_dim))
             labels_gan = np.ones((batch_size, 1))
-
             g_loss = gan.train_on_batch(noise, labels_gan)
 
             print(
@@ -240,41 +308,39 @@ if __name__ == "__main__":
     # Lower learning rate for the generator
     generator_optimizer = Adam(learning_rate=0.001, beta_1=0.5)
     # Higher learning rate for the discriminator
-    discriminator_optimizer = Adam(learning_rate=0.0001, beta_1=0.5)
+    discriminator_optimizer = Adam(learning_rate=0.0005, beta_1=0.5)
 
     pitchnames = sorted(set(note.get('pitch', '') or '.'.join(
         note.get('pitches', [])) for note in notes))
     n_notes = len(pitchnames)
 
-    # Build and compile the discriminator
-    discriminator = build_discriminator(sequence_length, n_notes)
+    # Build and compile the VAE
+    vae = build_vae(latent_dim, sequence_length)
 
-    # Print discriminator summary
+    # Build the hybrid GAN-VAE model
+    generator, discriminator, gan = build_gan_vae_hybrid(
+        vae, latent_dim, sequence_length, n_notes)
+
+    # Compile the discriminator
     print("\nDiscriminator Summary:")
     discriminator.summary()
     discriminator.compile(loss='binary_crossentropy',
                           optimizer=discriminator_optimizer, metrics=['accuracy'])
 
-    # Build the generator
-    generator = build_generator(latent_dim, sequence_length, n_notes)
+    print("VAE Summary:")
+    vae.summary()
 
-    print("Generator Summary:")
-    generator.summary()
-
-    # Build and compile the GAN
+    # Compile the GAN
     discriminator.trainable = False
-    gan_input = Input(shape=(latent_dim,))
-    x = generator(gan_input)
-    gan_output = discriminator(x)
-    gan = Model(gan_input, gan_output)
     gan.compile(loss='binary_crossentropy', optimizer=generator_optimizer)
 
-    # Train the GAN
-    train_gan(generator, discriminator, gan, network_input,
-              network_output, epochs=5, batch_size=256)
+    # Train the GAN-VAE hybrid model
+    # subset_size = network_input.shape[0]
+    subset_size = 100000
+    train_gan_vae_hybrid(vae, generator, discriminator, gan, network_input,
+                         epochs=5, batch_size=256, subset_size=subset_size)
+
     # Save the models
-    generator.save(
-        "generator_model.keras")
-    discriminator.save(
-        "discriminator_model.keras")
-    gan.save("gan_model.keras")
+    generator.save("Trained files/generator_model.keras")
+    discriminator.save("Trained files/discriminator_model.keras")
+    gan.save("Trained files/gan_model.keras")
