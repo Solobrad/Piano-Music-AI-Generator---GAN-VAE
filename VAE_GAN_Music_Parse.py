@@ -64,7 +64,7 @@ def save_notes_to_file(notes, output_file_path):
 
 
 # Replace 'your_dataset_path' with the path to your MIDI dataset
-dataset_path = "Composer data"
+dataset_path = "Song category"
 output_file_path = os.path.join('parsed_notes.json')
 
 # Use the functions
