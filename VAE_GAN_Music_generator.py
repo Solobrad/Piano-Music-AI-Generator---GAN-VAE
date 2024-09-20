@@ -51,7 +51,7 @@ def generate_music(generator, latent_dim, sequence_length, n_notes, output_file)
     music_stream.write('midi', fp=output_file)
 
 
-def decode_sequence(sequence, low_note=60, high_note=87):
+def decode_sequence(sequence, low_note=30, high_note=80):
     # Scale generated values to the desired MIDI note range
     return [int(x * (high_note - low_note)) + low_note for x in sequence.flatten()]
 

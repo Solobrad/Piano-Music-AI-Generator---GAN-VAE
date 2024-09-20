@@ -163,11 +163,11 @@ def build_discriminator(sequence_length, n_notes):
     model = Sequential()
     model.add(LSTM(512, input_shape=(
         sequence_length, 4), return_sequences=True))
-    model.add(Dropout(0.2))
+    model.add(Dropout(0.4))
     model.add(LSTM(512, return_sequences=False))
-    model.add(Dropout(0.2))
+    model.add(Dropout(0.4))
+    model.add(Dense(1024, activation='relu'))
     model.add(Dense(512))
-    model.add(Dropout(0.2))
     model.add(Dense(256))
     model.add(Dense(1, activation='sigmoid'))
     return model
@@ -229,12 +229,14 @@ def build_gan_vae_hybrid(vae, latent_dim, sequence_length, n_notes):
     return generator, discriminator, gan
 
 
-def train_gan_vae_hybrid(vae, generator, discriminator, gan, network_input, epochs, batch_size=256, subset_size=None):
+def train_gan_vae_hybrid(vae, generator, discriminator, gan, network_input, epochs, vae_epochs, batch_size, subset_size=None):
     # Compile the VAE
     vae.compile(optimizer='adam', loss='mean_squared_error')
 
     # Train the VAE
-    vae.fit(network_input, network_input, epochs=epochs, batch_size=batch_size)
+
+    vae.fit(network_input, network_input,
+            epochs=vae_epochs, batch_size=batch_size)
 
     # Extract the VAE encoder and decoder
     encoder = vae.get_layer("encoder")
@@ -261,12 +263,14 @@ def train_gan_vae_hybrid(vae, generator, discriminator, gan, network_input, epoc
 
             # Generate fake notes using the GAN generator
             generated_notes = generator.predict(latent_space)
-            labels_fake = np.zeros((batch_size, 1))
+            labels_fake = np.zeros((batch_size, 1)) + 0.1
 
             # Train the discriminator
-            d_loss_real = discriminator.train_on_batch(real_notes, labels_real)
-            d_loss_fake = discriminator.train_on_batch(
-                generated_notes, labels_fake)
+            for _ in range(3):  # Increase this number to change the ratio
+                d_loss_real = discriminator.train_on_batch(
+                    real_notes, labels_real)
+                d_loss_fake = discriminator.train_on_batch(
+                    generated_notes, labels_fake)
             d_loss = 0.5 * np.add(d_loss_real, d_loss_fake)
 
             # Train the GAN
@@ -306,7 +310,7 @@ if __name__ == "__main__":
     latent_dim = 100
     # Set different learning rates for generator and discriminator
     # Lower learning rate for the generator
-    generator_optimizer = Adam(learning_rate=0.001, beta_1=0.5)
+    generator_optimizer = Adam(learning_rate=0.0005, beta_1=0.5)
     # Higher learning rate for the discriminator
     discriminator_optimizer = Adam(learning_rate=0.0005, beta_1=0.5)
 
@@ -336,9 +340,9 @@ if __name__ == "__main__":
 
     # Train the GAN-VAE hybrid model
     # subset_size = network_input.shape[0]
-    subset_size = 100000
+    subset_size = 200000
     train_gan_vae_hybrid(vae, generator, discriminator, gan, network_input,
-                         epochs=5, batch_size=256, subset_size=subset_size)
+                         epochs=30, vae_epochs=20, batch_size=256, subset_size=subset_size)
 
     # Save the models
     generator.save("Trained files/generator_model.keras")
