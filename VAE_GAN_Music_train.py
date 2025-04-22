@@ -60,78 +60,72 @@ def pitch_to_midi(pitch_string):
         return 0
 
 
-def prepare_sequences(notes_with_details, sequence_length=30):
+def prepare_sequences_with_song_boundaries(songs_data, sequence_length=30):
     network_input = []
     network_output = []
 
-    for i in range(len(notes_with_details) - sequence_length):
-        sequence_in = notes_with_details[i:i + sequence_length]
-        sequence_out = notes_with_details[i + sequence_length]
+    for song in songs_data:
+        notes = song["notes"]
 
-        # Extracting pitch, offset, duration, and dynamic from the sequence
-        input_data = []
-        for item in sequence_in:
-            timestep_features = [0, 0, 0, 0]
-            if 'pitch' in item:
-                # If it's an individual note, update the features accordingly
-                pitch = item['pitch']
-                print(f"Processing single pitch: {pitch}")
-                timestep_features[0] = pitch_to_midi(item['pitch'])
-                timestep_features[1] = item['offset']
-                timestep_features[2] = item['duration']
-                timestep_features[3] = item['dynamic']
-            elif 'pitches' in item:
-                # If it's a chord, update the features for each pitch in the chord
-                pitches = item['pitches']
-                print(f"Processing chord pitches: {pitches}")
-                midi_values = [pitch_to_midi(p) for p in item['pitches']]
+        # Skip songs that are too short
+        if len(notes) <= sequence_length:
+            continue
 
-                # Remove None values from midi_values
+        for i in range(len(notes) - sequence_length):
+            sequence_in = notes[i:i + sequence_length]
+            sequence_out = notes[i + sequence_length]
 
-                midi_values = [m for m in midi_values if m is not None]
+            input_data = []
+            for item in sequence_in:
+                # Start with 128 for pitches + 3 for other features
+                timestep_features = [0] * 132
+                if 'pitch' in item:
+                    # This is a single note (not a chord)
+                    midi_value = pitch_to_midi(item['pitch'])
+                    if 0 <= int(midi_value) < 128:
+                        timestep_features[int(midi_value)] = 1
+                    timestep_features[128] = item['offset']
+                    timestep_features[129] = item['duration']
+                    timestep_features[130] = item['dynamic']
+                elif 'pitches' in item:
+                    # This is a chord (multiple notes at the same time)
+                    for p in item['pitches']:
+                        midi_value = pitch_to_midi(p)
+                        if 0 <= int(midi_value) < 128:
+                            timestep_features[int(midi_value)] = 1
+                    timestep_features[128] = item['offset']
+                    timestep_features[129] = item['duration']
+                    timestep_features[130] = item['dynamic']
 
-                if midi_values:
-                    # Compute mean of valid MIDI values
-                    timestep_features[0] = np.mean(midi_values)
-                else:
-                    # Default value if no valid MIDI values
-                    timestep_features[0] = 0
+                input_data.append(timestep_features)
 
-                timestep_features[1] = item['offset']
-                timestep_features[2] = item['duration']
-                timestep_features[3] = item['dynamic']
-        # Pad or truncate the input data to ensure each item has four features
-            input_data.append(timestep_features)
+            network_input.append(input_data)
 
-        network_input.append(input_data)
-        network_output.append(pitch_to_midi(sequence_out.get('pitch', '')))
+            # Process output (same as input)
+            output_features = [0] * 132
+            if 'pitch' in sequence_out:
+                output_features[int(pitch_to_midi(sequence_out['pitch']))] = 1
+            elif 'pitches' in sequence_out:
+                for p in sequence_out['pitches']:
+                    output_features[int(pitch_to_midi(p))] = 1
+            output_features[128] = sequence_out['offset']
+            output_features[129] = sequence_out['duration']
+            output_features[130] = sequence_out['dynamic']
+
+            network_output.append(output_features)
 
     network_input = np.array(network_input)
     network_output = np.array(network_output)
 
-    # Print the shape of network_input before reshaping
-    print("Shape of network_input before reshaping:", network_input.shape)
-
-    # Ensure the network_input has the shape (num_samples, sequence_length, num_features)
-    if network_input.ndim == 3 and network_input.shape[2] != 4:
-        print("Warning: The number of features in network_input is not 4. Adjusting...")
-        network_input = np.array([x + [[0, 0, 0, 0]] * (sequence_length - len(x)) if len(
-            x) < sequence_length else x[:sequence_length] for x in network_input])
-
-    network_input = network_input.reshape(
-        network_input.shape[0], network_input.shape[1], 4)
-    print("Shape of network_input after reshaping:", network_input.shape)
-
-    # Debug print to identify timesteps with only one feature
-    for i, timestep in enumerate(network_input):
-        if timestep.shape[-1] == 1:
-            print(f"Timestep {i} has only one feature:", timestep)
+    # Ensure correct shape
+    network_input = network_input.reshape(-1, sequence_length, 132)
 
     return network_input, network_output
 
 
 def pad_or_truncate_input(network_input, sequence_length):
-    # Pad or truncate the input data to ensure each item has four features
+    # 🔄 updated: Pad or truncate input data to ensure correct sequence length (132 features per timestep)
+
     for i in range(len(network_input)):
         if len(network_input[i]) < sequence_length:
             # If the sequence is shorter than sequence_length, pad it with zeros
@@ -154,20 +148,21 @@ def build_generator(latent_dim, sequence_length, n_notes):
     model.add(BatchNormalization())
     model.add(Dense(256))  # New Dense layer
     model.add(BatchNormalization())
-    model.add(Dense(sequence_length * 4, activation='relu'))  # Set units to 1
-    model.add(Reshape((sequence_length, 4)))
+    # Set units to 1
+    model.add(Dense(sequence_length * 132, activation='relu'))
+    model.add(Reshape((sequence_length, 132)))
     return model
 
 
 def build_discriminator(sequence_length, n_notes):
     model = Sequential()
     model.add(LSTM(512, input_shape=(
-        sequence_length, 4), return_sequences=True))
-    model.add(Dropout(0.2))
+        sequence_length, 132), return_sequences=True))
+    model.add(Dropout(0.4))
     model.add(LSTM(512, return_sequences=False))
-    model.add(Dropout(0.2))
+    model.add(Dropout(0.4))
+    model.add(Dense(1024, activation='relu'))
     model.add(Dense(512))
-    model.add(Dropout(0.2))
     model.add(Dense(256))
     model.add(Dense(1, activation='sigmoid'))
     return model
@@ -184,15 +179,15 @@ def build_gan(generator, discriminator):
 def build_vae(latent_dim, sequence_length):
     # Encoder
     # Adjust input shape if needed
-    encoder_input = Input(shape=(sequence_length, 4), name="encoder_input")
+    encoder_input = Input(shape=(sequence_length, 132), name="encoder_input")
     x = LSTM(128, return_sequences=False)(encoder_input)
     latent_vector = Dense(latent_dim, name="latent_vector")(x)
     encoder = Model(encoder_input, latent_vector, name="encoder")
 
     # Decoder
     decoder_input = Input(shape=(latent_dim,), name="decoder_input")
-    x = Dense(sequence_length * 4)(decoder_input)
-    decoder_output = Reshape((sequence_length, 4), name="decoder_output")(x)
+    x = Dense(sequence_length * 132)(decoder_input)
+    decoder_output = Reshape((sequence_length, 132), name="decoder_output")(x)
     decoder = Model(decoder_input, decoder_output, name="decoder")
 
     # VAE (Combining Encoder and Decoder)
@@ -229,56 +224,65 @@ def build_gan_vae_hybrid(vae, latent_dim, sequence_length, n_notes):
     return generator, discriminator, gan
 
 
-def train_gan_vae_hybrid(vae, generator, discriminator, gan, network_input, epochs, batch_size=256, subset_size=None):
-    # Compile the VAE
-    vae.compile(optimizer='adam', loss='mean_squared_error')
+def train_gan_vae_hybrid(encoder, decoder, discriminator, gan,
+                         network_input, sequence_length, batch_size, num_epochs=1):
+    bce = tf.keras.losses.BinaryCrossentropy(from_logits=False)
+    optimizer = tf.keras.optimizers.Adam(1e-4)
 
-    # Train the VAE
-    vae.fit(network_input, network_input, epochs=epochs, batch_size=batch_size)
+    # 🔄 changed: compile gan (generator + discriminator) for generator updates
+    discriminator.compile(loss='binary_crossentropy', optimizer=optimizer)
+    gan.compile(loss='binary_crossentropy', optimizer=optimizer)
 
-    # Extract the VAE encoder and decoder
-    encoder = vae.get_layer("encoder")
-    decoder = vae.get_layer("decoder")
+    num_sequences = len(network_input)
+    num_batches = num_sequences // batch_size
+    if num_batches == 0:
+        print(f"Warning: need ≥{batch_size} sequences, have {num_sequences}.")
+        return
 
-    # Determine the subset size if provided
-    if subset_size is None:
-        subset_size = len(network_input)
+    for epoch in range(num_epochs):
+        print(f"Epoch {epoch+1}/{num_epochs}")
+        indices = np.arange(num_sequences)
+        np.random.shuffle(indices)
+        d_losses, g_losses, recon_losses = [], [], []
 
-    num_batches = subset_size // batch_size
-
-    for epoch in range(epochs):
-        print(f"Epoch {epoch + 1}/{epochs}")
-
-        for _ in tqdm(range(num_batches), desc="Batch Progress"):
-            idx = np.random.randint(
-                0, min(subset_size, network_input.shape[0]), batch_size)
+        for batch_i in tqdm(range(num_batches), desc="Batch"):
+            idx = indices[batch_i*batch_size:(batch_i+1)*batch_size]
             real_notes = network_input[idx]
-            real_notes += np.random.normal(0, 0.1, real_notes.shape)
-            labels_real = np.ones((batch_size, 1)) * 0.9
+            noisy_notes = real_notes + \
+                np.random.normal(0, 0.05, real_notes.shape)
 
-            # Generate latent space representations using the VAE encoder
-            latent_space = encoder.predict(real_notes)
+            # 🔄 changed: train decoder to reconstruct all 132 features (including offset & dynamic)
+            recon_loss = vae.train_on_batch(noisy_notes, real_notes)
 
-            # Generate fake notes using the GAN generator
-            generated_notes = generator.predict(latent_space)
+            recon_losses.append(recon_loss)
+
+            # Encode / decode to get fake samples
+            latent = encoder.predict(noisy_notes, verbose=0)
+            fake_notes = decoder.predict(latent, verbose=0)
+
+            # Train discriminator
+            labels_real = np.ones((batch_size, 1))*0.9
             labels_fake = np.zeros((batch_size, 1))
-
-            # Train the discriminator
             d_loss_real = discriminator.train_on_batch(real_notes, labels_real)
-            d_loss_fake = discriminator.train_on_batch(
-                generated_notes, labels_fake)
-            d_loss = 0.5 * np.add(d_loss_real, d_loss_fake)
+            d_loss_fake = discriminator.train_on_batch(fake_notes, labels_fake)
+            d_losses.append(0.5*(d_loss_real+d_loss_fake))
 
-            # Train the GAN
-            noise = np.random.normal(0, 1, (batch_size, latent_dim))
-            labels_gan = np.ones((batch_size, 1))
-            g_loss = gan.train_on_batch(noise, labels_gan)
+            # 🔄 changed: train generator (via gan) to fool the discriminator
+            misleading_labels = np.ones((batch_size, 1))
 
-            print(
-                f"[D loss: {d_loss[0]} | D accuracy: {100 * d_loss[1]}] [G loss: {g_loss}]")
-            visualize_interval = 5
-            if (epoch + 1) % visualize_interval == 0:
-                visualize_generated_samples(generator, epoch + 1)
+            # ✅ Fixed (Line 50)
+            # 🟢 Fixed Line 50: use latent vectors from encoder, not random noise
+            g_loss = gan.train_on_batch(
+                latent, misleading_labels)  # Line 50 changed
+
+            g_losses.append(g_loss)
+
+            if batch_i % 100 == 0:
+                print(
+                    f" Batch {batch_i}/{num_batches}: D:{d_losses[-1]:.4f}, G:{g_losses[-1]:.4f}, R:{recon_loss:.4f}")
+
+        print(
+            f"Epoch {epoch+1} -> Avg D: {np.mean(d_losses):.4f}, G: {np.mean(g_losses):.4f}, Recon: {np.mean(recon_losses):.4f}")
 
 
 if __name__ == "__main__":
@@ -286,32 +290,33 @@ if __name__ == "__main__":
     output_file_path = os.path.join('parsed_notes.json')
 
     # Load parsed notes from file
-    notes = load_notes_from_file(output_file_path)
+    songs = load_notes_from_file(output_file_path)
 
     # Print the first 10 notes to inspect
-    print("Sample notes data:", notes[:10])
+    print("Sample song data:", songs[0]['notes'][:10])
 
     # Prepare sequences for training
     sequence_length = 30
-    network_input, network_output = prepare_sequences(notes, sequence_length)
+    network_input, network_output = prepare_sequences_with_song_boundaries(
+        songs, sequence_length)
 
     # Print the shape of the input data before training
     print("Shape of network_input:", network_input.shape)
 
     # Ensure the shape of the input data matches the expected shape for the LSTM layers
     # Assuming 4 features per timestep
-    print("Expected input shape for LSTM layers:", (None, sequence_length, 4))
+    print("Expected input shape for LSTM layers:", (None, sequence_length, 132))
 
     # Set parameters for the model
     latent_dim = 100
     # Set different learning rates for generator and discriminator
     # Lower learning rate for the generator
-    generator_optimizer = Adam(learning_rate=0.001, beta_1=0.5)
+    generator_optimizer = Adam(learning_rate=0.0005, beta_1=0.5)
     # Higher learning rate for the discriminator
     discriminator_optimizer = Adam(learning_rate=0.0005, beta_1=0.5)
 
     pitchnames = sorted(set(note.get('pitch', '') or '.'.join(
-        note.get('pitches', [])) for note in notes))
+        note.get('pitches', [])) for note in songs))
     n_notes = len(pitchnames)
 
     # Build and compile the VAE
@@ -336,11 +341,15 @@ if __name__ == "__main__":
 
     # Train the GAN-VAE hybrid model
     # subset_size = network_input.shape[0]
-    subset_size = 100000
-    train_gan_vae_hybrid(vae, generator, discriminator, gan, network_input,
-                         epochs=5, batch_size=256, subset_size=subset_size)
+    encoder = vae.get_layer("encoder")
+    decoder = vae.get_layer("decoder")
+    vae.compile(optimizer='adam', loss='mse')
+
+    subset_size = 200000
+    train_gan_vae_hybrid(encoder, decoder, discriminator, gan, network_input[:subset_size],
+                         sequence_length=sequence_length, batch_size=128, num_epochs=30)
 
     # Save the models
-    generator.save("Trained files/generator_model.keras")
-    discriminator.save("Trained files/discriminator_model.keras")
-    gan.save("Trained files/gan_model.keras")
+    generator.save("Trained files/generator_model.h5")
+    discriminator.save("Trained files/discriminator_model.h5")
+    gan.save("Trained files/gan_model.h5")

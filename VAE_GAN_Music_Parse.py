@@ -12,17 +12,22 @@ logger = logging.getLogger(__name__)
 
 
 def parse_midi_directory(directory_path, pitch_shift_interval=0):
-    notes_with_details = []  # Using a list to store dictionaries with note details
+    all_songs = []  # Line changed to use a list of songs instead of flat note list
 
     for root, _, files in os.walk(directory_path):
         for file_name in files:
             file_path = os.path.join(root, file_name)
             logger.info("Parsing MIDI file: %s", file_path)
             parsed_notes = parse_midi(file_path)
-            notes_with_details.extend(parsed_notes)
+            song_data = {
+                "filename": file_name,
+                "notes": parsed_notes
+            }
+            # Line changed to append song-level data
+            all_songs.append(song_data)
             print("Number of unique notes in file:", len(parsed_notes))
 
-    return notes_with_details
+    return all_songs
 
 
 def parse_midi(file_path, pitch_shift_interval=0):
