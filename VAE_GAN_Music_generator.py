@@ -96,12 +96,12 @@ def decode_sequence(seq, threshold=0.5):
 
 if __name__ == "__main__":
     # Load the saved generator model
-    generator = load_model("Trained files/generator_model.keras")
+    generator = load_model("Trained files/generator_model.h5")
 
     # Set parameters
     latent_dim = 100
     sequence_length = 30
-    num_segments = 2  # Generate 5 segments for a longer song
+    num_segments = 5  # Generate 5 segments for a longer song
 
     # Specify the output file path
     output_file = "generated_long_music.mid"

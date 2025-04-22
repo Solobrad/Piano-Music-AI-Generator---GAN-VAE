@@ -350,6 +350,6 @@ if __name__ == "__main__":
                          sequence_length=sequence_length, batch_size=128, num_epochs=30)
 
     # Save the models
-    generator.save("Trained files/generator_model.keras")
-    discriminator.save("Trained files/discriminator_model.keras")
-    gan.save("Trained files/gan_model.keras")
+    generator.save("Trained files/generator_model.h5")
+    discriminator.save("Trained files/discriminator_model.h5")
+    gan.save("Trained files/gan_model.h5")
